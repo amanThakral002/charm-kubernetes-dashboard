@@ -8,8 +8,8 @@ from pathlib import Path
 
 import kubernetes
 import ops
+from jinja2 import Template
 from ops.charm import CharmBase, InstallEvent, PebbleReadyEvent, StopEvent
-from ops.framework import StoredState
 from ops.main import main
 from ops.model import ActiveStatus
 
@@ -30,35 +30,6 @@ class KubernetesDashboardCharm(CharmBase):
     def _on_install(self, event: InstallEvent) -> None:
         logger.debug("Creating Kubernetes resources")
         self._create_additional_resources()
-
-    def _on_stop(self, event: StopEvent) -> None:
-        """Cleanup Kubernetes resources"""
-        # Authenticate with the Kubernetes API
-        self.k8s_auth()
-        # Get an API client
-        cl = kubernetes.client.ApiClient()
-        core_api = kubernetes.client.CoreV1Api(cl)
-        auth_api = kubernetes.client.RbacAuthorizationV1Api(cl)
-
-        logger.debug("Cleaning up Kubernetes resources")
-        # Remove some secrets
-        core_api.delete_namespaced_secret(namespace=self.model.name, name="kubernetes-dashboard-certs")
-        core_api.delete_namespaced_secret(namespace=self.model.name, name="kubernetes-dashboard-csrf")
-        core_api.delete_namespaced_secret(namespace=self.model.name, name="kubernetes-dashboard-key-holder")
-        # Remove the ServiceAccount
-        core_api.delete_namespaced_service_account(namespace=self.model.name, name="kubernetes-dashboard")
-        # Remove the Service
-        core_api.delete_namespaced_service(namespace=self.model.name, name="kubernetes-dashboard")
-        # Delete the ConfigMap
-        core_api.delete_namespaced_config_map(namespace=self.model.name, name="kubernetes-dashboard-settings")
-        # Delete the Role
-        auth_api.delete_namespaced_role(namespace=self.model.name, name="kubernetes-dashboard")
-        # Delete the ClusterRole
-        auth_api.delete_cluster_role(name="kubernetes-dashboard")
-        # Delete the RoleBinding
-        auth_api.delete_namespaced_role_binding(namespace=self.model.name, name="kubernetes-dashboard")
-        # Delete the ClusterRoleBinding
-        auth_api.delete_cluster_role_binding(name="kubernetes-dashboard")
 
     def _check_patched(self) -> bool:
         """Slightly naive check to see if the StatefulSet has already been patched"""
@@ -168,231 +139,51 @@ class KubernetesDashboardCharm(CharmBase):
         self.k8s_auth()
         # Get an API client
         cl = kubernetes.client.ApiClient()
+
+        # Open the resources.yaml template
+        with open("src/resources.j2.yaml", "r") as f:
+            template = Template(f.read())
+
+        # Render the template into a temporary file
+        with open("/tmp/rendered.yaml", "w+") as f:
+            f.write(template.render(model_name=self.model.name, app_name=self.app.name))
+
+        # Create the specified resources
+        # FIXME: Fix this horribly naive exception handling
+        try:
+            kubernetes.utils.create_from_yaml(cl, "/tmp/rendered.yaml")
+        except kubernetes.utils.FailToCreateError as e:
+            logger.warning("Some resources were not created!")
+            logger.warning("%s", e)
+
+    def _on_stop(self, event: StopEvent) -> None:
+        """Cleanup Kubernetes resources"""
+        # Authenticate with the Kubernetes API
+        self.k8s_auth()
+        # Get an API client
+        cl = kubernetes.client.ApiClient()
         core_api = kubernetes.client.CoreV1Api(cl)
         auth_api = kubernetes.client.RbacAuthorizationV1Api(cl)
-        try:
-            # Create the 'kubernetes-dashboard' service account
-            logger.debug("Creating additional Kubernetes ServiceAccounts")
-            core_api.create_namespaced_service_account(
-                namespace=self.model.name,
-                body=kubernetes.client.V1ServiceAccount(
-                    api_version="v1",
-                    metadata=self._template_meta("kubernetes-dashboard"),
-                ),
-            )
-        except kubernetes.client.exceptions.ApiException as e:
-            if e.status != 409:
-                raise
 
-        try:
-            # Create the 'kubernetes-dashboard' service
-            logger.debug("Creating additional Kubernetes Services")
-            core_api.create_namespaced_service(
-                namespace=self.model.name,
-                body=kubernetes.client.V1Service(
-                    api_version="v1",
-                    metadata=self._template_meta("kubernetes-dashboard"),
-                    spec=kubernetes.client.V1ServiceSpec(
-                        ports=[kubernetes.client.V1ServicePort(port=443, target_port=8443)],
-                        selector={"app.kubernetes.io/name": self.app.name},
-                    ),
-                ),
-            )
-        except kubernetes.client.exceptions.ApiException as e:
-            if e.status != 409:
-                raise
-
-        try:
-            # Create the 'kubernetes-dashboard-certs' secret
-            logger.debug("Creating additional Kubernetes Secrets")
-            core_api.create_namespaced_secret(
-                namespace=self.model.name,
-                body=kubernetes.client.V1Secret(
-                    api_version="v1",
-                    metadata=self._template_meta("kubernetes-dashboard-certs"),
-                    type="Opaque",
-                ),
-            )
-        except kubernetes.client.exceptions.ApiException as e:
-            if e.status != 409:
-                raise
-
-        try:
-            # Create the 'kubernetes-dashboard-csrf' secret
-            core_api.create_namespaced_secret(
-                namespace=self.model.name,
-                body=kubernetes.client.V1Secret(
-                    api_version="v1",
-                    metadata=self._template_meta("kubernetes-dashboard-csrf"),
-                    type="Opaque",
-                    data={"csrf": ""},
-                ),
-            )
-        except kubernetes.client.exceptions.ApiException as e:
-            if e.status != 409:
-                raise
-
-        try:
-            # Create the 'kubernetes-dashboard-key-holder' secret
-            core_api.create_namespaced_secret(
-                namespace=self.model.name,
-                body=kubernetes.client.V1Secret(
-                    api_version="v1",
-                    metadata=self._template_meta("kubernetes-dashboard-key-holder"),
-                    type="Opaque",
-                ),
-            )
-        except kubernetes.client.exceptions.ApiException as e:
-            if e.status != 409:
-                raise
-
-        try:
-            # Create the 'kubernetes-dashboard-settings' configmap
-            logger.debug("Creating additional Kubernetes ConfigMaps")
-            core_api.create_namespaced_config_map(
-                namespace=self.model.name,
-                body=kubernetes.client.V1ConfigMap(
-                    api_version="v1",
-                    metadata=self._template_meta("kubernetes-dashboard-settings"),
-                ),
-            )
-        except kubernetes.client.exceptions.ApiException as e:
-            if e.status != 409:
-                raise
-
-        try:
-            # Create the Kubernetes Role definition
-            logger.debug("Creating additional Kubernetes Roles")
-            auth_api.create_namespaced_role(
-                namespace=self.model.name,
-                body=kubernetes.client.V1Role(
-                    api_version="rbac.authorization.k8s.io/v1",
-                    metadata=self._template_meta("kubernetes-dashboard"),
-                    rules=[
-                        # Allow Dashboard to get, update and delete Dashboard exclusive secrets.
-                        kubernetes.client.V1PolicyRule(
-                            api_groups=[""],
-                            resources=["secrets"],
-                            resource_names=[
-                                "kubernetes-dashboard-key-holder",
-                                "kubernetes-dashboard-certs",
-                                "kubernetes-dashboard-csrf",
-                            ],
-                            verbs=["get", "update", "delete"],
-                        ),
-                        # Allow Dashboard to get and update 'kubernetes-dashboard-settings' config map.
-                        kubernetes.client.V1PolicyRule(
-                            api_groups=[""],
-                            resources=["configmaps"],
-                            resource_names=["kubernetes-dashboard-settings"],
-                            verbs=["get", "update"],
-                        ),
-                        # Allow Dashboard to get metrics.
-                        kubernetes.client.V1PolicyRule(
-                            api_groups=[""],
-                            resources=["services"],
-                            resource_names=[
-                                "heapster",
-                                "dashboard-metrics-scraper",
-                            ],
-                            verbs=["proxy"],
-                        ),
-                        kubernetes.client.V1PolicyRule(
-                            api_groups=[""],
-                            resources=["services/proxy"],
-                            resource_names=[
-                                "heapster",
-                                "http:heapster:",
-                                "https:heapster:",
-                                "dashboard-metrics-scraper",
-                                "http:dashboard-metrics-scraper",
-                            ],
-                            verbs=["get"],
-                        ),
-                    ],
-                ),
-            )
-        except kubernetes.client.exceptions.ApiException as e:
-            if e.status != 409:
-                raise
-
-        try:
-            # Create ClusterRole for dashboard
-            logger.debug("Creating additional Kubernetes ClusterRoles")
-            auth_api.create_cluster_role(
-                body=kubernetes.client.V1ClusterRole(
-                    api_version="rbac.authorization.k8s.io/v1",
-                    metadata=kubernetes.client.V1ObjectMeta(
-                        name="kubernetes-dashboard",
-                        labels={"app.kubernetes.io/name": self.app.name},
-                    ),
-                    rules=[
-                        # Allow Metrics Scraper to get metrics from the Metrics server
-                        kubernetes.client.V1PolicyRule(
-                            api_groups=["metrics.k8s.io"],
-                            resources=["pods", "nodes"],
-                            verbs=["get", "list", "watch"],
-                        ),
-                    ],
-                )
-            )
-        except kubernetes.client.exceptions.ApiException as e:
-            if e.status != 409:
-                raise
-
-        try:
-            # Create a RoleBinding
-            logger.debug("Creating additional Kubernetes RoleBindings")
-            auth_api.create_namespaced_role_binding(
-                namespace=self.model.name,
-                body=kubernetes.client.V1RoleBinding(
-                    api_version="rbac.authorization.k8s.io/v1",
-                    metadata=self._template_meta("kubernetes-dashboard"),
-                    role_ref=kubernetes.client.V1RoleRef(
-                        api_group="rbac.authorization.k8s.io",
-                        kind="Role",
-                        name="kubernetes-dashboard",
-                    ),
-                    subjects=[
-                        kubernetes.client.V1Subject(
-                            kind="ServiceAccount",
-                            name="kubernetes-dashboard",
-                            namespace=self.model.name,
-                        )
-                    ],
-                ),
-            )
-        except kubernetes.client.exceptions.ApiException as e:
-            if e.status != 409:
-                raise
-
-        try:
-            # Create a ClusterRoleBinding
-            logger.debug("Creating additional Kubernetes ClusterRoleBindings")
-            auth_api.create_cluster_role_binding(
-                body=kubernetes.client.V1ClusterRoleBinding(
-                    api_version="rbac.authorization.k8s.io/v1",
-                    metadata=kubernetes.client.V1ObjectMeta(
-                        name="kubernetes-dashboard",
-                        labels={"app.kubernetes.io/name": self.app.name},
-                    ),
-                    role_ref=kubernetes.client.V1RoleRef(
-                        api_group="rbac.authorization.k8s.io",
-                        kind="ClusterRole",
-                        name="kubernetes-dashboard",
-                    ),
-                    subjects=[
-                        kubernetes.client.V1Subject(
-                            kind="ServiceAccount",
-                            name="kubernetes-dashboard",
-                            namespace=self.model.name,
-                        )
-                    ],
-                )
-            )
-        except kubernetes.client.exceptions.ApiException as e:
-            if e.status != 409:
-                raise
+        logger.debug("Cleaning up Kubernetes resources")
+        # Remove some secrets
+        core_api.delete_namespaced_secret(namespace=self.model.name, name="kubernetes-dashboard-certs")
+        core_api.delete_namespaced_secret(namespace=self.model.name, name="kubernetes-dashboard-csrf")
+        core_api.delete_namespaced_secret(namespace=self.model.name, name="kubernetes-dashboard-key-holder")
+        # Remove the ServiceAccount
+        core_api.delete_namespaced_service_account(namespace=self.model.name, name="kubernetes-dashboard")
+        # Remove the Service
+        core_api.delete_namespaced_service(namespace=self.model.name, name="kubernetes-dashboard")
+        # Delete the ConfigMap
+        core_api.delete_namespaced_config_map(namespace=self.model.name, name="kubernetes-dashboard-settings")
+        # Delete the Role
+        auth_api.delete_namespaced_role(namespace=self.model.name, name="kubernetes-dashboard")
+        # Delete the ClusterRole
+        auth_api.delete_cluster_role(name="kubernetes-dashboard")
+        # Delete the RoleBinding
+        auth_api.delete_namespaced_role_binding(namespace=self.model.name, name="kubernetes-dashboard")
+        # Delete the ClusterRoleBinding
+        auth_api.delete_cluster_role_binding(name="kubernetes-dashboard")
 
     def _template_meta(self, name) -> kubernetes.client.V1ObjectMeta:
         """Helper method to return common Kubernetes V1ObjectMeta"""
