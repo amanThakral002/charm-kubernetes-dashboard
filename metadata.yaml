@@ -19,3 +19,7 @@ resources:
   scraper-image:
     type: oci-image
     description: Docker image for kubernetesui/metrics-scraper
+
+requires:
+  ingress:
+    interface: ingress

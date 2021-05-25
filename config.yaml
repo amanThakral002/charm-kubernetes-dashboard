@@ -1,7 +1,7 @@
 # Copyright 2021 Canonical
 # See LICENSE file for licensing details.
 options:
-  tls-cert-secret:
+  tls-secret-name:
     description: |
       The name of an existing Kubernetes secret that contains a TLS certificate and
       key to be used when serving the Kubernetes Dashboard. The secret can be of type
@@ -12,14 +12,3 @@ options:
       certificate for use
     type: string
     default: ""
-
-  # TODO: Remove this when the ingress relation is implemented
-  bind-insecure:
-    description: |
-      Serve the dashboard over HTTP, not HTTPS. Implied if `ingress` relation is defined as
-      it is assumed that the ingress will handle the TLS termination.
-
-      WARNING: If this option is specified, but no relation is formed, the dashboard will be
-      accessible without login. Use this option with care.
-    type: boolean
-    default: false

@@ -9,6 +9,7 @@ from ipaddress import IPv4Address
 from pathlib import Path
 from subprocess import check_output
 
+from charms.nginx_ingress_integrator.v0.ingress import IngressRequires
 from cryptography import x509
 from kubernetes import kubernetes
 from ops.charm import CharmBase, InstallEvent, StopEvent
@@ -32,8 +33,23 @@ class KubernetesDashboardCharm(CharmBase):
         super().__init__(*args)
         self.framework.observe(self.on.install, self._on_install)
         self.framework.observe(self.on.config_changed, self._on_config_changed)
+        self.framework.observe(self.on.dashboard_pebble_ready, self._on_config_changed)
+        self.framework.observe(self.on.scraper_pebble_ready, self._on_config_changed)
         self.framework.observe(self.on.stop, self._on_stop)
         self.framework.observe(self.on.delete_resources_action, self._on_delete_resources_action)
+
+        # Basic ingress config for the relation
+        ingress_config = {
+            "service-hostname": "dashboard.juju",
+            "service-port": 9090,
+            "service-name": self.app.name,
+        }
+        # If there is a TLS seret provided in config, pass it to the ingress too
+        if self.config["tls-secret-name"]:
+            ingress_config.update({"tls-secret-name": self.config["tls-secret-name"]})
+
+        # Initialise the Ingress library
+        self.ingress = IngressRequires(self, ingress_config)
 
         self._stored.set_default(dashboard_cmd="")
 
@@ -77,7 +93,7 @@ class KubernetesDashboardCharm(CharmBase):
 
         self.unit.status = ActiveStatus()
 
-    def _config_scraper(self) -> dict:
+    def _config_scraper(self) -> None:
         """Configure Pebble to start the Kubernetes Metrics Scraper"""
         # Define a simple layer
         layer = {
@@ -131,11 +147,14 @@ class KubernetesDashboardCharm(CharmBase):
             f"--namespace={self.model.name}",
         ]
 
-        if self.config["bind-insecure"]:
+        # If the ingress relation is established
+        if self.model.get_relation("ingress"):
+            # Bind to insecure only, let the ingress handle tls termination
             cmd.extend(
                 [
                     "--insecure-bind-address=0.0.0.0",
                     "--default-cert-dir=/null",
+                    "--enable-insecure-login",
                 ]
             )
         else:
@@ -146,7 +165,6 @@ class KubernetesDashboardCharm(CharmBase):
                     "--tls-key-file=tls.key",
                 ]
             )
-        # TODO: Add "--enable-insecure-login", when relation is made
         return " ".join(cmd)
 
     def _on_delete_resources_action(self, event):
