@@ -3,6 +3,8 @@
 import logging
 
 from kubernetes import kubernetes
+import os
+import glob
 
 logger = logging.getLogger(__name__)
 
@@ -358,9 +360,20 @@ class K8sDashboardResources:
             },
         ]
 
+    def _loadfile(self, file_name):
+        with open(file_name, 'r') as f:
+            data = f.read()
+            f.close()
+            return data
+
     @property
     def _configmaps(self) -> list:
         """Return a list of ConfigMaps needed by the Kubernetes Dashboard"""
+        dicts = {}
+        for filePath in glob.glob("src/files/scripts/*.*"):
+            fileData = self._loadfile(filePath)
+            fileName = os.path.basename(filePath)
+            dicts[fileName] = fileData
         return [
             {
                 "namespace": self.namespace,
@@ -369,8 +382,12 @@ class K8sDashboardResources:
                     metadata=kubernetes.client.V1ObjectMeta(
                         namespace=self.namespace,
                         name="kubernetes-dashboard-settings",
-                        labels={"app.kubernetes.io/name": self.app.name},
+                        labels={
+                            "app.kubernetes.io/name": self.app.name,
+                            "app": self.app.name
+                        },
                     ),
+                    data=dicts,
                 ),
             }
         ]

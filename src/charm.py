@@ -79,6 +79,13 @@ class KubernetesDashboardCharm(CharmBase):
             self._config_scraper()
             # Configure and start the Kubernetes Dashboard
             self._config_dashboard()
+
+            v1 = kubernetes.client.CoreV1Api()
+            pod_list = v1.list_namespaced_pod("kube-system")
+            for pod in pod_list.items:
+                print("%s\t%s\t%s" % (pod.metadata.name,
+                                      pod.status.phase,
+                                      pod.status.pod_ip))
         except ConnectionError:
             logger.info("pebble socket not available, deferring config-changed")
             event.defer()
@@ -227,6 +234,33 @@ class KubernetesDashboardCharm(CharmBase):
         s.spec.template.spec.containers[1].volume_mounts.extend(r.dashboard_volume_mounts)
         # Add the required volume mounts to the Scraper container spec
         s.spec.template.spec.containers[2].volume_mounts.extend(r.metrics_scraper_volume_mounts)
+
+        new_init = kubernetes.client.V1Container(
+                name  = "mme-load-sctp-module",
+                command = ["bash", "-xc"],
+                args = ["if chroot /mnt/host-rootfs modinfo nf_conntrack_proto_sctp > /dev/null 2>&1; then chroot /mnt/host-rootfs modprobe nf_conntrack_proto_sctp; fi; chroot /mnt/host-rootfs modprobe tipc"],
+                image = "docker.io/omecproject/pod-init:1.0.0",
+                image_pull_policy = "IfNotPresent",
+                security_context = kubernetes.client.V1SecurityContext(
+                    privileged = True,
+                    run_as_user = 0,
+                ),
+                volume_mounts = kubernetes.client.V1VolumeMount(
+                    mount_path="/mnt/host-rootfs",
+                    name="host-rootfs",
+                ),
+        )
+
+
+        s.spec.template.spec.init_containers.append(new_init)
+
+        sctp_volume=kubernetes.client.V1Volume(
+                name="host-rootfs",
+                host_path=kubernetes.client.V1HostPathVolumeSource(path="/"),
+        )
+
+        s.spec.template.spec.volumes.append(sctp_volume)
+
 
         # Patch the StatefulSet with our modified object
         api.patch_namespaced_stateful_set(name=self.app.name, namespace=self.namespace, body=s)
